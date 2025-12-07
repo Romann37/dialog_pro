@@ -123,7 +123,10 @@ client = OpenRouterClient()
 
 @lru_cache(maxsize=1)
 def load_embedding_model() -> SentenceTransformer:
-    return SentenceTransformer(CONFIG["embedding_model"])
+    return SentenceTransformer(
+        CONFIG["embedding_model"],
+        device="cpu",
+    )
 
 
 class VectorKnowledgeBase:
