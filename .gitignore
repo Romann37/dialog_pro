@@ -1,0 +1,10 @@
+.env
+venv/
+__pycache__/
+dist/
+build/
+*.spec
+*.db
+documents/
+Ответы ИИ-агента/
+
