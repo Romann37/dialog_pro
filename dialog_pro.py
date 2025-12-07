@@ -233,13 +233,29 @@ async def process_document(filepath: str) -> Tuple[str, str]:
 
     elif filepath.lower().endswith(".pdf"):
         try:
+            # 1. Пробуем вытащить текст со всех страниц как есть
             reader = PdfReader(filepath)
-            content = " ".join(page.extract_text() or "" for page in reader.pages)
+            text_pages = [page.extract_text() or "" for page in reader.pages]
+            content = " ".join(text_pages)
             doc_type = "pdf"
+
+            # 2. Если текста очень мало, добираем его через OCR по всем страницам
+            if len(content.strip()) < 100:  # порог можно подстроить под себя
+                ocr_reader = get_ocr_reader()
+                images = convert_from_path(filepath, poppler_path=CONFIG.get("poppler_path"))
+                ocr_text = " ".join(
+                    " ".join(d[1] for d in ocr_reader.readtext(img)) for img in images
+                )
+                # объединяем то, что удалось прочитать как текст, с OCR
+                content = (content + " " + ocr_text).strip()
+
         except Exception:
+            # 3. Если PdfReader вообще упал, сразу читаем pdf через OCR
             ocr_reader = get_ocr_reader()
             images = convert_from_path(filepath, poppler_path=CONFIG.get("poppler_path"))
-            content = " ".join(" ".join(d[1] for d in ocr_reader.readtext(img)) for img in images)
+            content = " ".join(
+                " ".join(d[1] for d in ocr_reader.readtext(img)) for img in images
+            )
             doc_type = "pdf"
 
     else:
@@ -291,9 +307,13 @@ async def ask_ai(question: str) -> str:
         doc_context = kb.search(question)
 
         use_web = st.session_state.get("use_web_search", CONFIG["use_web_search_default"])
-        min_chars = st.session_state.get("min_doc_context_chars", CONFIG["min_doc_context_chars"])
+        min_chars = st.session_state.get(
+            "min_doc_context_chars", CONFIG["min_doc_context_chars"]
+        )
         min_chunks = st.session_state.get("min_doc_chunks", CONFIG["min_doc_chunks"])
-        web_max_results = st.session_state.get("web_max_results", CONFIG["web_max_results"])
+        web_max_results = st.session_state.get(
+            "web_max_results", CONFIG["web_max_results"]
+        )
 
         web_context = ""
         if use_web:
@@ -403,6 +423,7 @@ def main() -> None:
                 answer = asyncio.run(ask_ai(question))
                 st.session_state.last_answer = answer
                 st.session_state.last_question = question
+
                 st.write("### ✅ Ответ ИИ:")
                 st.write(answer)
 
