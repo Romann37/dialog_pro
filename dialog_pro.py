@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from openai import OpenAI, APIError
 from docx import Document
 from PyPDF2 import PdfReader
-from duckduckgo_search import DDGS  # пока не используется, можно добавить веб-поиск
+from duckduckgo_search import DDGS
 import easyocr
 from pdf2image import convert_from_path
 from sentence_transformers import SentenceTransformer
@@ -34,7 +34,7 @@ logging.basicConfig(
 
 CONFIG = {
     "app_name": "AI Document Assistant Pro",
-    "max_context_tokens": 4000,  # здесь это лимит по символам
+    "max_context_tokens": 4000,  # лимит по символам
     "chunk_size": 500,
     "top_k": 3,
     "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
@@ -45,6 +45,12 @@ CONFIG = {
     "poppler_path": shutil.which("pdftoppm"),  # автоопределение poppler
     "retry_attempts": 3,
     "ocr_cache": True,
+
+    # настройки веб-поиска
+    "use_web_search_default": True,
+    "min_doc_context_chars": 500,   # порог длины контекста (символы)
+    "min_doc_chunks": 1,            # порог количества чанков в БЗ
+    "web_max_results": 3,           # количество результатов DuckDuckGo
 }
 
 
@@ -200,7 +206,7 @@ class VectorKnowledgeBase:
         top_indices = np.argsort(similarities)[-top_k:][::-1]
         context = "\n\n".join([self.chunks[i] for i in top_indices])
 
-        # Здесь max_context_tokens используется как лимит по символам
+        # max_context_tokens как лимит по символам
         return context[: CONFIG["max_context_tokens"]]
 
 
@@ -213,7 +219,7 @@ def get_ocr_reader():
 
 
 async def process_document(filepath: str) -> Tuple[str, str]:
-    """Возвращает (content, doc_type)"""
+    """Возвращает (content, doc_type)."""
     filename = Path(filepath).name
     cache_key = f"ocr_{filename}"
 
@@ -262,10 +268,50 @@ def save_answer_docx(question: str, answer: str) -> str:
     return str(filename)
 
 
+def web_search(query: str, max_results: int | None = None) -> str:
+    """Поиск в DuckDuckGo, возвращает склеенные сниппеты."""
+    if max_results is None:
+        max_results = CONFIG.get("web_max_results", 3)
+
+    try:
+        results = []
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                snippet = r.get("body") or r.get("snippet") or ""
+                if snippet:
+                    results.append(snippet)
+        return "\n\n".join(results)
+    except Exception as e:
+        logging.error(f"Ошибка веб-поиска: {e}")
+        return ""
+
+
 async def ask_ai(question: str) -> str:
     with st.spinner("🤖 ИИ анализирует документы..."):
-        context = kb.search(question)
-        answer = await client.ask(question, context)
+        doc_context = kb.search(question)
+
+        use_web = st.session_state.get("use_web_search", CONFIG["use_web_search_default"])
+        min_chars = st.session_state.get("min_doc_context_chars", CONFIG["min_doc_context_chars"])
+        min_chunks = st.session_state.get("min_doc_chunks", CONFIG["min_doc_chunks"])
+        web_max_results = st.session_state.get("web_max_results", CONFIG["web_max_results"])
+
+        web_context = ""
+        if use_web:
+            few_chunks = len(kb.chunks) < min_chunks
+            short_context = doc_context == "База знаний пуста" or len(doc_context) < min_chars
+
+            if few_chunks or short_context:
+                web_context = web_search(question, max_results=web_max_results)
+
+        if web_context:
+            full_context = (
+                f"Контекст из загруженных документов:\n{doc_context}\n\n"
+                f"Дополнительная информация из интернета:\n{web_context}"
+            )
+        else:
+            full_context = doc_context
+
+        answer = await client.ask(question, full_context)
     return answer
 
 
@@ -300,6 +346,40 @@ def main() -> None:
                 except Exception as e:
                     logging.exception(e)
                     st.error(f"❌ Ошибка обработки {file.name}: {e}")
+
+        st.header("🌐 Интернет-поиск")
+
+        use_web_search = st.checkbox(
+            "Использовать интернет‑поиск",
+            value=CONFIG.get("use_web_search_default", True),
+        )
+
+        min_doc_context_chars = st.number_input(
+            "Мин. длина контекста (символы)",
+            min_value=0,
+            value=int(CONFIG.get("min_doc_context_chars", 500)),
+            step=100,
+        )
+
+        min_doc_chunks = st.number_input(
+            "Мин. число чанков",
+            min_value=0,
+            value=int(CONFIG.get("min_doc_chunks", 1)),
+            step=1,
+        )
+
+        web_max_results = st.number_input(
+            "Результатов веб-поиска",
+            min_value=1,
+            max_value=10,
+            value=int(CONFIG.get("web_max_results", 3)),
+            step=1,
+        )
+
+        st.session_state.use_web_search = use_web_search
+        st.session_state.min_doc_context_chars = int(min_doc_context_chars)
+        st.session_state.min_doc_chunks = int(min_doc_chunks)
+        st.session_state.web_max_results = int(web_max_results)
 
         st.header("⚙️ Настройки")
         st.info(f"Чанков в базе: {len(kb.chunks)}")
