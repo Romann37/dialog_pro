@@ -22,6 +22,3 @@ CMD streamlit run dialog_pro.py \
     --server.headless true \
     --server.enableCORS false \
     --server.enableXsrfProtection falseFROM ubuntu:latest
-LABEL authors="mihal"
-
-ENTRYPOINT ["top", "-b"]
